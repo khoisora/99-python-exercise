@@ -6,13 +6,15 @@ import logging
 import json
 import time
 
+# Author: Le Cong Thang
+
 class App(tornado.web.Application):
 
     def __init__(self, handlers, **kwargs):
         super().__init__(handlers, **kwargs)
 
         # Initialising db connection
-        self.db = sqlite3.connect("listings.db")
+        self.db = sqlite3.connect("users.db")
         self.db.row_factory = sqlite3.Row
         self.init_db()
 
@@ -21,11 +23,9 @@ class App(tornado.web.Application):
 
         # Create table
         cursor.execute(
-            "CREATE TABLE IF NOT EXISTS 'listings' ("
+            "CREATE TABLE IF NOT EXISTS 'users' ("
             + "id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,"
-            + "user_id INTEGER NOT NULL,"
-            + "listing_type TEXT NOT NULL,"
-            + "price INTEGER NOT NULL,"
+            + "name TEXT NOT NULL,"
             + "created_at INTEGER NOT NULL,"
             + "updated_at INTEGER NOT NULL"
             + ");"
@@ -38,8 +38,8 @@ class BaseHandler(tornado.web.RequestHandler):
         self.set_status(status_code)
         self.write(json.dumps(obj))
 
-# /listings
-class ListingsHandler(BaseHandler):
+# /users
+class UsersHandler(BaseHandler):
     @tornado.gen.coroutine
     def get(self):
         # Parsing pagination params
@@ -59,55 +59,36 @@ class ListingsHandler(BaseHandler):
             self.write_json({"result": False, "errors": "invalid page_size"}, status_code=400)
             return
 
-        # Parsing user_id param
-        user_id = self.get_argument("user_id", None)
-        if user_id is not None:
-            try:
-                user_id = int(user_id)
-            except:
-                self.write_json({"result": False, "errors": "invalid user_id"}, status_code=400)
-                return
-
         # Building select statement
-        select_stmt = "SELECT * FROM listings"
-        # Adding user_id filter clause if param is specified
-        if user_id is not None:
-            select_stmt += " WHERE user_id=?"
+        select_stmt = "SELECT * FROM users"
         # Order by and pagination
         limit = page_size
         offset = (page_num - 1) * page_size
         select_stmt += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
 
         # Fetching listings from db
-        if user_id is not None:
-            args = (user_id, limit, offset)
-        else:
-            args = (limit, offset)
+        args = (limit, offset)
         cursor = self.application.db.cursor()
         results = cursor.execute(select_stmt, args)
 
-        listings = []
+        users = []
         for row in results:
-            fields = ["id", "user_id", "listing_type", "price", "created_at", "updated_at"]
-            listing = {
+            fields = ["id", "name", "created_at", "updated_at"]
+            user = {
                 field: row[field] for field in fields
             }
-            listings.append(listing)
+            users.append(user)
 
-        self.write_json({"result": True, "listings": listings})
+        self.write_json({"result": True, "users": users})
 
     @tornado.gen.coroutine
     def post(self):
         # Collecting required params
-        user_id = self.get_argument("user_id")
-        listing_type = self.get_argument("listing_type")
-        price = self.get_argument("price")
+        name = self.get_argument("name")
 
         # Validating inputs
         errors = []
-        user_id_val = self._validate_user_id(user_id, errors)
-        listing_type_val = self._validate_listing_type(listing_type, errors)
-        price_val = self._validate_price(price, errors)
+        name_val = self._validate_name(name, errors)
         time_now = int(time.time() * 1e6) # Converting current time to microseconds
 
         # End if we have any validation errors
@@ -118,61 +99,68 @@ class ListingsHandler(BaseHandler):
         # Proceed to store the listing in our db
         cursor = self.application.db.cursor()
         cursor.execute(
-            "INSERT INTO 'listings' "
-            + "('user_id', 'listing_type', 'price', 'created_at', 'updated_at') "
-            + "VALUES (?, ?, ?, ?, ?)",
-            (user_id_val, listing_type_val, price_val, time_now, time_now)
+            "INSERT INTO 'users' "
+            + "('name', 'created_at', 'updated_at') "
+            + "VALUES (?, ?, ?)",
+            (name_val, time_now, time_now)
         )
         self.application.db.commit()
 
         # Error out if we fail to retrieve the newly created listing
         if cursor.lastrowid is None:
-            self.write_json({"result": False, "errors": ["Error while adding listing to db"]}, status_code=500)
+            self.write_json({"result": False, "errors": ["Error while adding user to db"]}, status_code=500)
             return
 
-        listing = dict(
+        user = dict(
             id=cursor.lastrowid,
-            user_id=user_id_val,
-            listing_type=listing_type_val,
-            price=price_val,
+            name=name_val,
             created_at=time_now,
             updated_at=time_now
         )
 
-        self.write_json({"result": True, "listing": listing})
+        self.write_json({"result": True, "user": user})
 
-    def _validate_user_id(self, user_id, errors):
+    def _validate_name(self, name, errors):
         try:
-            user_id = int(user_id)
-            return user_id
+            name = str(name)
+            return name
         except Exception as e:
-            logging.exception("Error while converting user_id to int: {}".format(user_id))
-            errors.append("invalid user_id")
+            logging.exception("Error while converting name to str: {}".format(name))
+            errors.append("invalid name")
             return None
 
-    def _validate_listing_type(self, listing_type, errors):
-        if listing_type not in {"rent", "sale"}:
-            errors.append("invalid listing_type. Supported values: 'rent', 'sale'")
-            return None
-        else:
-            return listing_type
+# /users/{id}
+class UserHandler(BaseHandler):
+	@tornado.gen.coroutine
+	def get(self, user_id):
+		try:
+			user_id = int(user_id)
+		except:
+			logging.exception("Error while parsing user_id: {}".format(user_id))
+			self.write_json({"result": False, "errors": "invalid user_id"}, status_code=400)
+			return
 
-    def _validate_price(self, price, errors):
-        # Convert string to int
-        try:
-            price = int(price)
-        except Exception as e:
-            logging.exception("Error while converting price to int: {}".format(price))
-            errors.append("invalid price. Must be an integer")
-            return None
+	    # Building select statement
+		select_stmt = "SELECT * FROM users WHERE id=?"
 
-        if price < 1:
-            errors.append("price must be greater than 0")
-            return None
-        else:
-            return price
+	    # Fetching listings from db
+		cursor = self.application.db.cursor()
+		results = cursor.execute(select_stmt, [user_id])
 
-# /listings/ping
+		users = []
+		for row in results:
+			fields = ["id", "name", "created_at", "updated_at"]
+			user = {
+				field: row[field] for field in fields
+			}
+			users.append(user)
+
+		if len(users)>0:
+			self.write_json({"result": True, "user": users[0]})
+		else:
+			self.write_json({"result": True, "errors": "No user with given id"})
+
+# /users/ping
 class PingHandler(tornado.web.RequestHandler):
     @tornado.gen.coroutine
     def get(self):
@@ -180,14 +168,15 @@ class PingHandler(tornado.web.RequestHandler):
 
 def make_app(options):
     return App([
-        (r"/listings/ping", PingHandler),
-        (r"/listings", ListingsHandler),
+        (r"/users/ping", PingHandler),
+        (r"/users", UsersHandler),
+        (r"/users/(.*)", UserHandler)   # check int in Handler, not intend to use regex here
     ], debug=options.debug)
 
 if __name__ == "__main__":
     # Define settings/options for the web app
-    # Specify the port number to start the web app on (default value is port 8887)
-    tornado.options.define("port", default=8887)
+    # Specify the port number to start the web app on (default value is port 8889)
+    tornado.options.define("port", default=8889)
     # Specify whether the app should run in debug mode
     # Debug mode restarts the app automatically on file changes
     tornado.options.define("debug", default=True)
@@ -201,7 +190,7 @@ if __name__ == "__main__":
     # Create web app
     app = make_app(options)
     app.listen(options.port)
-    logging.info("Starting listing service. PORT: {}, DEBUG: {}".format(options.port, options.debug))
+    logging.info("Starting user service. PORT: {}, DEBUG: {}".format(options.port, options.debug))
 
     # Start event loop
     tornado.ioloop.IOLoop.instance().start()
